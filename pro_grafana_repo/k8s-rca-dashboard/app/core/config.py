@@ -41,25 +41,24 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------
     # Prometheus
     # ---------------------------------------------------------------
-    PROMETHEUS_URL: str = "http://localhost:9090"
+    # Leave blank to disable Prometheus collection until you have
+    # forwarded a real Prometheus endpoint to localhost:9090.
+    PROMETHEUS_URL: str = ""
     PROM_NODE_LABEL: str = "node"
     PROM_INSTANCE_TO_NODE: dict[str, str] = {}
 
     # ---------------------------------------------------------------
     # Docker
     # ---------------------------------------------------------------
-    # One Docker daemon per node. In a 3-node K3s lab, the collector
-    # will be given a mapping of node name -> docker socket/URL.
-    DOCKER_HOSTS: dict[str, str] = {
-        "server-1": "unix://var/run/docker.sock",
-        "server-2": "tcp://server-2:2375",
-        "server-3": "tcp://server-3:2375",
-    }
+    # One Docker daemon per node. For local Windows environments, leave
+    # this empty unless you have a reachable Docker host mapping.
+    DOCKER_HOSTS: dict[str, str] = {}
 
     # ---------------------------------------------------------------
     # Longhorn
     # ---------------------------------------------------------------
-    LONGHORN_API_URL: str = "http://longhorn-frontend.longhorn-system.svc.cluster.local:80/v1"
+    # Leave blank if Longhorn is not installed or not port-forwarded.
+    LONGHORN_API_URL: str = ""
     # Optional: longhorn-manager's Prometheus-format metrics endpoint, used only
     # to enrich volumes with read/write IOPS, throughput and latency (the /v1
     # REST objects above don't carry these). Leave blank to skip - those fields

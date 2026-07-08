@@ -17,7 +17,11 @@ async def instant_query(session: aiohttp.ClientSession, promql: str) -> list[dic
     {"metric": {...labels...}, "value": [timestamp, "value_str"]} dicts).
     Returns [] on any error (logged) so a single bad/slow query never takes
     down the whole collection cycle."""
-    url = f"{settings.PROMETHEUS_URL}/api/v1/query"
+    if not settings.PROMETHEUS_URL:
+        logger.debug("Skipping Prometheus query because PROMETHEUS_URL is not configured")
+        return []
+
+    url = f"{settings.PROMETHEUS_URL.rstrip('/')}/api/v1/query"
     try:
         async with session.get(url, params={"query": promql}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:

@@ -1,0 +1,21 @@
+# Copy this file to .env and adjust values for your environment.
+
+RCA_KUBE_IN_CLUSTER=False
+RCA_KUBECONFIG_PATH=C:\Users\rishabh\.kube\config
+
+# Set this only after port-forwarding Prometheus to localhost:9090:
+# RCA_PROMETHEUS_URL=http://127.0.0.1:9090
+RCA_PROMETHEUS_URL=http://127.0.0.1:9090
+
+# Set this only after port-forwarding Longhorn to localhost:8080:
+# RCA_LONGHORN_API_URL=http://127.0.0.1:8080/v1
+RCA_LONGHORN_API_URL=
+
+RCA_K8S_POLL_INTERVAL=5
+RCA_DOCKER_POLL_INTERVAL=5
+RCA_PROM_POLL_INTERVAL=10
+RCA_LONGHORN_POLL_INTERVAL=10
+RCA_RCA_EVAL_INTERVAL=5
+
+RCA_CPU_HIGH_PCT=95
+RCA_MEM_HIGH_PCT=95

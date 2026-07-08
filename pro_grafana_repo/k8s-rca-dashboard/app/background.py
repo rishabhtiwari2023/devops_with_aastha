@@ -21,6 +21,7 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.core.config import settings
 from app.utils.retention import run_retention
 
 logger = logging.getLogger("rca.background")
@@ -75,9 +76,21 @@ class BackgroundServices:
         self._rca_engine.on_alert = _on_alert
 
         await self._safe_start("kubernetes_collector", self._start_k8s)
-        await self._safe_start("docker_collector", self._start_docker)
-        await self._safe_start("prometheus_collector", self._start_prometheus)
-        await self._safe_start("longhorn_collector", self._start_longhorn)
+
+        if settings.DOCKER_HOSTS:
+            await self._safe_start("docker_collector", self._start_docker)
+        else:
+            logger.info("Docker collector disabled (no DOCKER_HOSTS configured)")
+
+        if settings.PROMETHEUS_URL:
+            await self._safe_start("prometheus_collector", self._start_prometheus)
+        else:
+            logger.info("Prometheus collector disabled (no PROMETHEUS_URL configured)")
+
+        if settings.LONGHORN_API_URL:
+            await self._safe_start("longhorn_collector", self._start_longhorn)
+        else:
+            logger.info("Longhorn collector disabled (no LONGHORN_API_URL configured)")
 
         self._tasks.append(
             asyncio.create_task(

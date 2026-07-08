@@ -28,6 +28,10 @@ async def _get_collection(session: aiohttp.ClientSession, path: str) -> list[dic
     """GET a Longhorn collection endpoint and return its `data` list.
     Returns [] on any error (logged) so a Longhorn-manager hiccup never
     takes down the whole collection cycle."""
+    if not settings.LONGHORN_API_URL:
+        logger.debug("Skipping Longhorn API request because LONGHORN_API_URL is not configured")
+        return []
+
     url = f"{settings.LONGHORN_API_URL.rstrip('/')}/{path.lstrip('/')}"
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:

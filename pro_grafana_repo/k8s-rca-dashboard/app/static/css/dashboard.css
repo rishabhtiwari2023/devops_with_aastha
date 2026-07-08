@@ -228,6 +228,80 @@ body {
     border-bottom: none;
 }
 
+.tree-node-row {
+    padding-left: 0;
+}
+
+.tree-namespace-row {
+    padding-left: 16px;
+}
+
+.tree-deployment-row {
+    padding-left: 26px;
+}
+
+.tree-pod-row {
+    padding-left: 36px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.tree-pod-row:hover {
+    background: rgba(56, 189, 248, 0.08);
+}
+
+.tree-pod-row.selected {
+    background: rgba(56, 189, 248, 0.18);
+}
+
+.tree-pod-meta {
+    color: var(--muted);
+    font-size: 0.82rem;
+    margin-top: 6px;
+}
+
+.detail-panel {
+    background: var(--panel);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 18px;
+    padding: 16px;
+    min-height: 220px;
+    margin-bottom: 20px;
+}
+
+.detail-panel p {
+    margin: 0;
+    color: var(--muted);
+}
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.detail-grid dt {
+    font-size: 0.9rem;
+    color: var(--muted);
+}
+
+.detail-grid dd {
+    margin: 0 0 10px;
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.detail-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.detail-list li {
+    margin-bottom: 10px;
+}
+
 .tree-node strong,
 .alert-row strong,
 .timeline-item strong,

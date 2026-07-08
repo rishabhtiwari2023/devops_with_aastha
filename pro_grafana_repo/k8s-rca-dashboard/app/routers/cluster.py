@@ -129,7 +129,10 @@ def cluster_tree(db: Session = Depends(get_db)):
     for pod in pods:
         node_key = pod.node_name or "_unscheduled"
         ns_key = pod.namespace or "_unknown"
-        owner_key = (pod.owner_kind or "_orphan", pod.owner_name or pod.name)
+        owner_key = (
+            pod.owner_kind or "Pod",
+            pod.owner_name or pod.name or pod.uid,
+        )
         tree[node_key][ns_key][owner_key].append(pod)
 
     result_nodes = []

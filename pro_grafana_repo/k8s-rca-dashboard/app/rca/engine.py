@@ -25,9 +25,11 @@ re-alert every poll cycle.
 
 import asyncio
 import logging
+import sqlite3
 from datetime import datetime, timezone, timedelta
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -79,8 +81,8 @@ class RCAEngine:
                 if evidence is None:
                     continue
                 result = _evaluate(evidence)
-                self._persist(db, evidence, result)
-            db.commit()
+                await self._persist(db, evidence, result)
+            await self._retry_db_operation(db.commit, "db.commit")
         except Exception:
             logger.exception("Unexpected error in RCA engine")
             db.rollback()
@@ -243,7 +245,7 @@ class RCAEngine:
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
-    def _persist(self, db: Session, ev: Evidence, result: RuleResult):
+    async def _persist(self, db: Session, ev: Evidence, result: RuleResult):
         rc = RootCauseRecord(
             pod_uid=ev.pod_uid,
             pod_name=ev.pod_name,
@@ -257,7 +259,7 @@ class RCAEngine:
             evidence=result.evidence,
         )
         db.add(rc)
-        db.flush()   # populate rc.id for the FK below
+        await self._retry_db_operation(db.flush, "db.flush (root cause record)")
 
         alert = Alert(
             severity=result.severity,
@@ -270,7 +272,7 @@ class RCAEngine:
             root_cause_id=rc.id,
         )
         db.add(alert)
-        db.flush()
+        await self._retry_db_operation(db.flush, "db.flush (alert)")
 
         logger.info("RCA verdict: pod=%s/%s trigger=%s -> %s (%s)",
                     ev.namespace, ev.pod_name, ev.trigger, result.reason_code, result.severity)
@@ -280,6 +282,49 @@ class RCAEngine:
                 self.on_alert(rc, alert)
             except Exception:
                 logger.exception("on_alert callback failed")
+
+    async def _retry_db_operation(
+        self,
+        operation: Callable[[], Any],
+        description: str,
+        attempts: int = 5,
+        initial_backoff: float = 0.1,
+    ) -> Any:
+        backoff = initial_backoff
+        for attempt in range(1, attempts + 1):
+            try:
+                return operation()
+            except OperationalError as exc:
+                orig = getattr(exc, 'orig', None)
+                if isinstance(orig, sqlite3.OperationalError) and 'database is locked' in str(orig).lower():
+                    if attempt == attempts:
+                        raise
+                    logger.warning(
+                        "SQLite locked during %s; retrying %s/%s after %.1fs",
+                        description,
+                        attempt,
+                        attempts,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff *= 2
+                    continue
+                raise
+            except sqlite3.OperationalError as exc:
+                if 'database is locked' in str(exc).lower():
+                    if attempt == attempts:
+                        raise
+                    logger.warning(
+                        "SQLite locked during %s; retrying %s/%s after %.1fs",
+                        description,
+                        attempt,
+                        attempts,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff *= 2
+                    continue
+                raise
 
 
 def _evaluate(ev: Evidence) -> RuleResult:

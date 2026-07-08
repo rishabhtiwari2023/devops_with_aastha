@@ -21,7 +21,7 @@ os.makedirs(os.path.dirname(settings.DB_PATH), exist_ok=True)
 
 engine = create_engine(
     f"sqlite:///{settings.DB_PATH}",
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30},
     pool_pre_ping=True,
 )
 
@@ -33,6 +33,7 @@ def _set_sqlite_pragmas(dbapi_conn, _):
     cursor.execute("PRAGMA journal_mode=WAL;")
     cursor.execute("PRAGMA synchronous=NORMAL;")
     cursor.execute("PRAGMA foreign_keys=ON;")
+    cursor.execute("PRAGMA busy_timeout=30000;")
     cursor.close()
 
 

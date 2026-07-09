@@ -243,7 +243,6 @@ Additional runtime settings are defined in `app/core/config.py`.
 - The collector loops are resilient: if one source fails, the others continue.
 - The rule engine is deterministic and intentionally AI-free.
 - This project is a modular base for adding new collectors, RCA rules, and UI panels.
-
 kubectl port-forward -n monitoring svc/simple-prometheus 9090:9090
 Forwarding from 127.0.0.1:9090 -> 9090
 Forwarding from [::1]:9090 -> 9090

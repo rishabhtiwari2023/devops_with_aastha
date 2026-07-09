@@ -1,0 +1,19 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment files
+.env
+.env.local
+
+# SQLite and runtime data
+data/*.db
+logs/
+
+# Editor files
+.vscode/

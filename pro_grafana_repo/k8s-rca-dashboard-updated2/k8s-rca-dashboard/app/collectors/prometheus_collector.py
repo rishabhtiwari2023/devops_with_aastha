@@ -28,8 +28,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import SessionLocal, SessionLocalWrite
 from app.collectors.prometheus_client import instant_query
-from app.models.metrics import PodMetric, NodeMetric
+from app.models.metrics import PodMetric, NodeMetric, DockerMetric
 from app.models.pod import Pod
+from app.models.node import Node
 
 logger = logging.getLogger("rca.prometheus_collector")
 
@@ -50,6 +51,13 @@ Q_POD_MEM_USAGE_BYTES = (
 Q_POD_MEM_LIMIT_BYTES = 'kube_pod_container_resource_limits{resource="memory"}'
 Q_POD_MEM_REQUEST_BYTES = 'kube_pod_container_resource_requests{resource="memory"}'
 
+# Pod Network & Disk queries (derived from cAdvisor/Prometheus)
+Q_POD_NET_RX_RATE = 'sum by (namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m]))'
+Q_POD_NET_TX_RATE = 'sum by (namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m]))'
+Q_POD_DISK_READ_RATE = 'sum by (namespace, pod) (rate(container_blkio_device_usage_total{operation="Read", pod!=""}[5m]))'
+Q_POD_DISK_WRITE_RATE = 'sum by (namespace, pod) (rate(container_blkio_device_usage_total{operation="Write", pod!=""}[5m]))'
+
+
 Q_NODE_CPU_IDLE_RATIO = 'avg by ({label}) (rate(node_cpu_seconds_total{{mode="idle"}}[2m]))'
 Q_NODE_MEM_TOTAL = 'node_memory_MemTotal_bytes'
 Q_NODE_MEM_AVAILABLE = 'node_memory_MemAvailable_bytes'
@@ -66,12 +74,16 @@ class PrometheusCollector:
         async with aiohttp.ClientSession() as session:
             pod_task = self._collect_pod_metrics(session)
             node_task = self._collect_node_metrics(session)
-            pod_rows, node_rows = await asyncio.gather(pod_task, node_task)
+            pod_docker_task = self._collect_pod_docker_metrics(session)
+            pod_rows, node_rows, pod_docker_rows = await asyncio.gather(
+                pod_task, node_task, pod_docker_task
+            )
 
         db = SessionLocalWrite()
         try:
             self._write_pod_metrics(db, pod_rows)
             self._write_node_metrics(db, node_rows)
+            self._write_pod_docker_metrics(db, pod_docker_rows)
             db.commit()
         except Exception:
             logger.exception("Failed writing Prometheus metrics to DB")
@@ -130,12 +142,18 @@ class PrometheusCollector:
         return merged
 
     def _write_pod_metrics(self, db: Session, pod_rows: dict):
-        # Resolve (namespace, pod name) -> (pod_uid, node_name) via our own table
-        pods = db.query(Pod.name, Pod.namespace, Pod.uid, Pod.node_name).all()
+        # Resolve (namespace, pod name) -> (pod_uid, node_name) via our own table using read-only session
+        read_db = SessionLocal()
+        try:
+            pods = read_db.query(Pod.name, Pod.namespace, Pod.uid, Pod.node_name).all()
+        finally:
+            read_db.close()
         lookup = {(ns, name): (uid, node) for name, ns, uid, node in pods}
 
         for (namespace, pod_name), metrics in pod_rows.items():
             uid, node_name = lookup.get((namespace, pod_name), ("", ""))
+            if not uid:
+                logger.warning("Could not resolve pod_uid for pod %s/%s. Metrics will not map to a pod in DB.", namespace, pod_name)
             db.add(PodMetric(
                 pod_uid=uid,
                 pod_name=pod_name,
@@ -201,20 +219,27 @@ class PrometheusCollector:
             if not node_name:
                 # Strip port if present (e.g. "desktop-control-plane:9100" -> "desktop-control-plane")
                 stripped = raw_key.split(":")[0]
-                if stripped in db_nodes:
-                    node_name = stripped
-                else:
-                    # Case insensitive match fallback
-                    for db_node in db_nodes:
-                        if stripped.lower() == db_node.lower():
-                            node_name = db_node
-                            break
+                
+                # Check IP mapping first
+                from app.core.config import NODE_IP_TO_NAME
+                node_name = NODE_IP_TO_NAME.get(stripped)
+                
+                if not node_name:
+                    if stripped in db_nodes:
+                        node_name = stripped
                     else:
-                        # Single-node cluster fallback: if there is only 1 node in the database, map it to that node
-                        if len(db_nodes) == 1:
-                            node_name = list(db_nodes)[0]
+                        # Case insensitive match fallback
+                        for db_node in db_nodes:
+                            if stripped.lower() == db_node.lower():
+                                node_name = db_node
+                                break
                         else:
-                            node_name = stripped
+                            # Single-node cluster fallback: if there is only 1 node in the database, map it to that node
+                            if len(db_nodes) == 1:
+                                node_name = list(db_nodes)[0]
+                            else:
+                                node_name = stripped
+                                logger.warning("Could not map Prometheus node key '%s' to any K8s node in DB. Metrics will write under raw name '%s'.", raw_key, stripped)
 
             total = mem_total_d.get(raw_key, 0.0)
             avail = mem_avail_d.get(raw_key, 0.0)
@@ -244,6 +269,56 @@ class PrometheusCollector:
         for node_name, metrics in node_rows.items():
             db.add(NodeMetric(node_name=node_name, **metrics))
         db.flush()
+
+    async def _collect_pod_docker_metrics(self, session: aiohttp.ClientSession) -> dict:
+        rx, tx, blk_read, blk_write = await asyncio.gather(
+            instant_query(session, Q_POD_NET_RX_RATE),
+            instant_query(session, Q_POD_NET_TX_RATE),
+            instant_query(session, Q_POD_DISK_READ_RATE),
+            instant_query(session, Q_POD_DISK_WRITE_RATE),
+        )
+
+        rx_d = _vector_to_dict(rx, ("namespace", "pod"))
+        tx_d = _vector_to_dict(tx, ("namespace", "pod"))
+        blk_read_d = _vector_to_dict(blk_read, ("namespace", "pod"))
+        blk_write_d = _vector_to_dict(blk_write, ("namespace", "pod"))
+
+        all_keys = set(rx_d) | set(tx_d) | set(blk_read_d) | set(blk_write_d)
+        merged = {}
+        for key in all_keys:
+            merged[key] = {
+                "net_rx_bytes_per_sec": rx_d.get(key, 0.0),
+                "net_tx_bytes_per_sec": tx_d.get(key, 0.0),
+                "blk_read_bytes_per_sec": blk_read_d.get(key, 0.0),
+                "blk_write_bytes_per_sec": blk_write_d.get(key, 0.0),
+                "iops": 0.0,
+            }
+        return merged
+
+    def _write_pod_docker_metrics(self, db: Session, pod_docker_rows: dict):
+        # Resolve (namespace, pod name) -> (pod_uid, node_name) via our own table using read-only session
+        read_db = SessionLocal()
+        try:
+            pods = read_db.query(Pod.name, Pod.namespace, Pod.uid, Pod.node_name).all()
+        finally:
+            read_db.close()
+        lookup = {(ns, name): (uid, node) for name, ns, uid, node in pods}
+
+        for (namespace, pod_name), metrics in pod_docker_rows.items():
+            uid, node_name = lookup.get((namespace, pod_name), ("", ""))
+            if not uid:
+                logger.warning("Could not resolve pod_uid for pod %s/%s in docker metrics. Metrics will not map to a pod in DB.", namespace, pod_name)
+            db.add(DockerMetric(
+                pod_uid=uid,
+                pod_name=pod_name,
+                namespace=namespace,
+                container_name="main",
+                container_id="prom-derived",
+                node_name=node_name or "",
+                **metrics,
+            ))
+        db.flush()
+
 
 
 # ----------------------------------------------------------------------

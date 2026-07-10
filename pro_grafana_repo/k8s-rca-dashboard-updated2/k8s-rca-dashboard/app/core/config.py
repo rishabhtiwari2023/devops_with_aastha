@@ -104,3 +104,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Global in-memory cache to map Node IP addresses to Node Names (filled by k8s collector)
+NODE_IP_TO_NAME: dict[str, str] = {}
+

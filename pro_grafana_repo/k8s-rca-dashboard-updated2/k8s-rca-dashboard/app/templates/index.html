@@ -50,6 +50,19 @@
                     <option value="Unknown">Unknown</option>
                 </select>
             </div>
+            <div class="control-group">
+                <label for="filter-time">Time Window</label>
+                <select id="filter-time">
+                    <option value="8">Last 8m</option>
+                    <option value="15">Last 15m</option>
+                    <option value="30">Last 30m</option>
+                    <option value="60" selected>Last 1h</option>
+                    <option value="180">Last 3h</option>
+                    <option value="360">Last 6h</option>
+                    <option value="720">Last 12h</option>
+                    <option value="1440">Last 24h</option>
+                </select>
+            </div>
             <div class="control-group control-search">
                 <label for="filter-search">Search</label>
                 <input id="filter-search" type="search" placeholder="Pod / namespace / node" />

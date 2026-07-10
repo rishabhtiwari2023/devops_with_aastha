@@ -486,6 +486,16 @@ function setupFilters(tree) {
             renderTree(state.tree);
         });
 
+        const timeSelect = document.getElementById("filter-time");
+        if (timeSelect) {
+            timeSelect.addEventListener("change", () => {
+                if (state.selectedPodUid) {
+                    loadPodDetails(state.selectedPodUid);
+                }
+                refreshData();
+            });
+        }
+
         refreshButton.addEventListener("click", refreshData);
         filtersInitialized = true;
     }
@@ -620,19 +630,144 @@ function renderPodDetails() {
             : `<li>No recent events available.</li>`}
                 </ul>
             </div>
+            <div style="margin-top: 20px;">
+                <h4>Metrics Trend (Last <span id="trend-time-val">1h</span>)</h4>
+                <div id="pod-history-chart" style="width: 100%; height: 260px; border-radius: 12px; padding: 12px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); margin-top: 10px;"></div>
+            </div>
         </div>
     `;
+}
+
+function renderPodHistoryChart() {
+    if (window.podHistoryChartInstance) {
+        window.podHistoryChartInstance.dispose();
+        window.podHistoryChartInstance = null;
+    }
+    const chartEl = document.getElementById("pod-history-chart");
+    if (!chartEl) return;
+
+    const metrics = state.podMetricsHistory || [];
+    const docker = state.podDockerHistory || [];
+
+    const allTimes = [...new Set([
+        ...metrics.map(m => m.timestamp),
+        ...docker.map(d => d.timestamp)
+    ])].sort();
+
+    if (!allTimes.length) {
+        chartEl.innerHTML = `<p style="color:var(--muted); text-align:center; padding-top:100px; margin:0;">No metrics history in this window.</p>`;
+        return;
+    }
+
+    const cpuData = [];
+    const memData = [];
+    const netRxData = [];
+    const netTxData = [];
+    const diskRdData = [];
+    const diskWrData = [];
+
+    const metricsMap = new Map(metrics.map(m => [m.timestamp, m]));
+    const dockerMap = new Map(docker.map(d => [d.timestamp, d]));
+
+    allTimes.forEach(t => {
+        const m = metricsMap.get(t);
+        const d = dockerMap.get(t);
+
+        cpuData.push(m ? m.cpu_pct_of_limit || 0 : null);
+        memData.push(m ? m.mem_pct_of_limit || 0 : null);
+
+        netRxData.push(d ? (d.net_rx_bytes_per_sec || 0) / 1_048_576 : null);
+        netTxData.push(d ? (d.net_tx_bytes_per_sec || 0) / 1_048_576 : null);
+        diskRdData.push(d ? (d.blk_read_bytes_per_sec || 0) / 1_048_576 : null);
+        diskWrData.push(d ? (d.blk_write_bytes_per_sec || 0) / 1_048_576 : null);
+    });
+
+    const xLabels = allTimes.map(t => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+
+    window.podHistoryChartInstance = echarts.init(chartEl, null, { renderer: "canvas" });
+    window.podHistoryChartInstance.setOption({
+        backgroundColor: "transparent",
+        textStyle: { color: "#e2e8f0" },
+        grid: { top: 50, bottom: 40, left: 50, right: 50 },
+        tooltip: {
+            trigger: "axis",
+            formatter: function(params) {
+                let s = `<strong>${params[0].axisValue}</strong><br/>`;
+                params.forEach(p => {
+                    let val = p.value;
+                    if (val === null || val === undefined) val = "-";
+                    else if (p.seriesName.includes("%")) val = val.toFixed(1) + "%";
+                    else val = val.toFixed(3) + " MB/s";
+                    s += `${p.marker} ${p.seriesName}: ${val}<br/>`;
+                });
+                return s;
+            }
+        },
+        legend: {
+            data: ["CPU %", "Mem %", "Net RX", "Net TX", "Disk Read", "Disk Write"],
+            textStyle: { color: "#94a3b8", fontSize: 9 }
+        },
+        xAxis: {
+            type: "category",
+            data: xLabels,
+            axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.4)" } },
+            axisLabel: { color: "#cbd5e1" },
+        },
+        yAxis: [
+            {
+                type: "value",
+                name: "MB/s",
+                position: "left",
+                axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.4)" } },
+                axisLabel: { color: "#cbd5e1" }
+            },
+            {
+                type: "value",
+                name: "% Limit",
+                position: "right",
+                axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.4)" } },
+                axisLabel: { color: "#cbd5e1" },
+                max: 100
+            }
+        ],
+        series: [
+            { name: "CPU %", type: "line", yAxisIndex: 1, data: cpuData, itemStyle: { color: "#38bdf8" }, symbol: "none" },
+            { name: "Mem %", type: "line", yAxisIndex: 1, data: memData, itemStyle: { color: "#facc15" }, symbol: "none" },
+            { name: "Net RX", type: "line", data: netRxData, itemStyle: { color: "#34d399" }, symbol: "none" },
+            { name: "Net TX", type: "line", data: netTxData, itemStyle: { color: "#a78bfa" }, symbol: "none" },
+            { name: "Disk Read", type: "line", data: diskRdData, itemStyle: { color: "#fb7185" }, symbol: "none" },
+            { name: "Disk Write", type: "line", data: diskWrData, itemStyle: { color: "#f43f5e" }, symbol: "none" }
+        ]
+    });
 }
 
 async function loadPodDetails(uid) {
     state.selectedPodUid = uid;
     renderTree(state.tree);
     renderPodDetails();
-    const url = `/api/pods/${encodeURIComponent(uid)}`;
-    const details = await fetchJson(url);
+    
+    const timeSelect = document.getElementById("filter-time");
+    const minutes = timeSelect ? timeSelect.value : 60;
+    
+    const [details, metricsHistory, dockerHistory] = await Promise.all([
+        fetchJson(`/api/pods/${encodeURIComponent(uid)}`),
+        fetchJson(`/api/pods/${encodeURIComponent(uid)}/metrics?minutes=${minutes}`),
+        fetchJson(`/api/pods/${encodeURIComponent(uid)}/docker?minutes=${minutes}`)
+    ]);
+    
     if (!details) return;
     state.podDetails = details;
+    state.podMetricsHistory = metricsHistory || [];
+    state.podDockerHistory = dockerHistory || [];
+    
     renderPodDetails();
+    
+    const trendTimeValSpan = document.getElementById("trend-time-val");
+    if (trendTimeValSpan && timeSelect) {
+        trendTimeValSpan.textContent = timeSelect.options[timeSelect.selectedIndex].text.replace("Last ", "");
+    }
+    
+    renderPodHistoryChart();
 }
 
 function setupTreeSelection() {
@@ -742,7 +877,9 @@ async function loadAlertsPage(page) {
 
 async function loadTimelinePage(page) {
     state.timelinePage = Math.max(1, page);
-    const data = await fetchJson(`/api/events/timeline?minutes=120&page=${state.timelinePage}&page_size=10`);
+    const timeSelect = document.getElementById("filter-time");
+    const minutes = timeSelect ? timeSelect.value : 60;
+    const data = await fetchJson(`/api/events/timeline?minutes=${minutes}&page=${state.timelinePage}&page_size=10`);
     if (data) {
         state.timeline = data.items || data;
         state.timelinePages = data.pages || 1;
@@ -752,11 +889,13 @@ async function loadTimelinePage(page) {
 }
 
 async function refreshData() {
+    const timeSelect = document.getElementById("filter-time");
+    const minutes = timeSelect ? timeSelect.value : 60;
     const results = await Promise.allSettled([
         fetchJson("/api/cluster/summary"),
         fetchJson("/api/cluster/tree"),
         fetchJson("/api/alerts?limit=20"),
-        fetchJson("/api/events/timeline?minutes=120"),
+        fetchJson(`/api/events/timeline?minutes=${minutes}`),
         fetchJson("/api/rankings/all"),
         fetchJson("/api/nodes/compare"),
         fetchJson("/api/cluster/resources"),
@@ -855,7 +994,7 @@ function showToast({ title, message, severity = "critical" }) {
     toast.querySelector(".toast-close").addEventListener("click", () => toast.remove());
     container.appendChild(toast);
 
-    setTimeout(() => toast.remove(), 12000);
+    setTimeout(() => toast.remove(), 30000);
 }
 
 function setWsStatus(connected) {

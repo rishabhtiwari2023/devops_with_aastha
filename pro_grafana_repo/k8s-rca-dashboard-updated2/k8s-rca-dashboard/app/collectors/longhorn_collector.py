@@ -37,7 +37,7 @@ import aiohttp
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import SessionLocalWrite
+from app.core.database import SessionLocal, SessionLocalWrite
 from app.collectors.longhorn_client import get_volumes, get_replicas, get_engines
 from app.models.longhorn import LonghornVolumeMetric
 from app.models.events import K8sEvent
@@ -186,12 +186,20 @@ class LonghornCollector:
         if not pvc_to_volume:
             return
 
-        pods = db.query(Pod).filter(Pod.pvc_names.isnot(None)).all()
-        for pod in pods:
-            pvc_names = pod.pvc_names or []
-            resolved = [pvc_to_volume[p] for p in pvc_names if p in pvc_to_volume]
-            if resolved != (pod.longhorn_volumes or []):
-                pod.longhorn_volumes = resolved
+        read_db = SessionLocal()
+        try:
+            pod_lookups = read_db.query(Pod.uid, Pod.pvc_names, Pod.longhorn_volumes).filter(Pod.pvc_names.isnot(None)).all()
+        finally:
+            read_db.close()
+
+        for uid, pvc_names, longhorn_volumes in pod_lookups:
+            pvc_names_list = pvc_names or []
+            resolved = [pvc_to_volume[p] for p in pvc_names_list if p in pvc_to_volume]
+            if resolved != (longhorn_volumes or []):
+                # Fetch actual instance from write db session only for mutation
+                pod_to_update = db.query(Pod).get(uid)
+                if pod_to_update:
+                    pod_to_update.longhorn_volumes = resolved
         db.flush()
 
 
@@ -221,17 +229,23 @@ def _merge(volumes: list[dict], replicas: list[dict], engines: list[dict],
         attached_node = controllers[0].get("hostId", "") if controllers else ""
 
         engine = engines_by_volume.get(name, {})
+        if not engine and controllers:
+            engine = controllers[0]
+
         engine_name = engine.get("name", "")
         engine_state = engine.get("state", "") or v.get("state", "")
 
         vol_replicas = replicas_by_volume.get(name, [])
+        if not vol_replicas:
+            vol_replicas = v.get("replicas") or []
+
         replica_states = [
             {
                 "name": r.get("name", ""),
                 "node": r.get("hostId", ""),
                 "mode": r.get("mode", ""),          # RW / WO (rebuilding) / ERR
                 "running": bool(r.get("running", False)),
-                "state": r.get("currentState", ""),
+                "state": r.get("currentState") or r.get("state") or ("running" if r.get("running") else "stopped"),
             }
             for r in vol_replicas
         ]

@@ -138,10 +138,24 @@ def cluster_tree(db: Session = Depends(get_db)):
     for pod in pods:
         node_key = pod.node_name or "_unscheduled"
         ns_key = pod.namespace or "_unknown"
-        owner_key = (
-            pod.owner_kind or "Pod",
-            pod.owner_name or pod.name or pod.uid,
-        )
+        
+        if pod.deployment:
+            owner_kind = "Deployment"
+            owner_name = pod.deployment
+        elif pod.statefulset:
+            owner_kind = "StatefulSet"
+            owner_name = pod.statefulset
+        elif pod.daemonset:
+            owner_kind = "DaemonSet"
+            owner_name = pod.daemonset
+        elif pod.replicaset:
+            owner_kind = "ReplicaSet"
+            owner_name = pod.replicaset
+        else:
+            owner_kind = pod.owner_kind or "Pod"
+            owner_name = pod.owner_name or pod.name or pod.uid
+
+        owner_key = (owner_kind, owner_name)
         tree[node_key][ns_key][owner_key].append(pod)
 
     result_nodes = []

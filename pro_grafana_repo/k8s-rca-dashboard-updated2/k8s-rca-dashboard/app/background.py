@@ -77,10 +77,36 @@ class BackgroundServices:
 
         await self._safe_start("kubernetes_collector", self._start_k8s)
 
+        if not settings.DOCKER_HOSTS:
+            import os
+            try:
+                import docker as docker_lib
+                if os.name == "nt":
+                    # On Windows, check local Docker named pipe
+                    client = docker_lib.DockerClient(base_url="npipe:////./pipe/docker_engine", timeout=2)
+                    client.ping()
+                    settings.DOCKER_HOSTS = {"localhost": "npipe:////./pipe/docker_engine"}
+                    logger.info("Auto-configured Docker collector to use local Docker named pipe (npipe:////./pipe/docker_engine)")
+                else:
+                    # On Unix/Linux, check local Docker socket
+                    client = docker_lib.DockerClient(base_url="unix://var/run/docker.sock", timeout=2)
+                    client.ping()
+                    settings.DOCKER_HOSTS = {"localhost": "unix://var/run/docker.sock"}
+                    logger.info("Auto-configured Docker collector to use local Docker socket (unix://var/run/docker.sock)")
+            except Exception:
+                try:
+                    client = docker_lib.from_env(timeout=2)
+                    client.ping()
+                    base_url = client.api.base_url
+                    settings.DOCKER_HOSTS = {"localhost": base_url}
+                    logger.info("Auto-configured Docker collector to use default environment Docker socket: %s", base_url)
+                except Exception:
+                    pass
+
         if settings.DOCKER_HOSTS:
             await self._safe_start("docker_collector", self._start_docker)
         else:
-            logger.info("Docker collector disabled (no DOCKER_HOSTS configured)")
+            logger.info("Docker collector disabled (no DOCKER_HOSTS configured and local Docker socket unreachable)")
 
         if settings.PROMETHEUS_URL:
             await self._safe_start("prometheus_collector", self._start_prometheus)

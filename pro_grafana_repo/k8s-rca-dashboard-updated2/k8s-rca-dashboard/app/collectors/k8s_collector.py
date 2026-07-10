@@ -115,9 +115,22 @@ class KubernetesCollector:
             node_list = self.core.list_node()
         seen_names = set()
 
+        node_ip_map = {}
         for n in node_list.items:
             name = n.metadata.name
             seen_names.add(name)
+            
+            # Map InternalIP and ExternalIP to the node hostname
+            for addr in (n.status.addresses or []):
+                if addr.type in ("InternalIP", "ExternalIP"):
+                    node_ip_map[addr.address] = name
+
+        from app.core.config import NODE_IP_TO_NAME
+        NODE_IP_TO_NAME.update(node_ip_map)
+
+        for n in node_list.items:
+            name = n.metadata.name
+
 
             conditions = {c.type: c.status for c in (n.status.conditions or [])}
             ready = conditions.get("Ready", "Unknown")

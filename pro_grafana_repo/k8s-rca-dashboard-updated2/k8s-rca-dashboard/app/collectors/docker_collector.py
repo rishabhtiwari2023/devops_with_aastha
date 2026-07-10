@@ -40,7 +40,7 @@ from docker.errors import DockerException, NotFound
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import SessionLocalWrite
+from app.core.database import SessionLocal, SessionLocalWrite
 from app.collectors.docker_client import get_docker_client
 from app.models.metrics import DockerMetric
 
@@ -88,6 +88,15 @@ class DockerCollector:
             logger.warning("Could not reach Docker daemon on %s: %s", node_name, e)
             return
 
+        # Pre-query pod node mapping to resolve correct node names (e.g. for kind/k3d/local docker sock setups) using read-only session
+        from app.models.pod import Pod
+        read_db = SessionLocal()
+        try:
+            pods = read_db.query(Pod.uid, Pod.node_name).all()
+        finally:
+            read_db.close()
+        pod_to_node = {uid: node for uid, node in pods if uid}
+
         for container in containers:
             labels = container.labels or {}
             pod_name = labels.get(_POD_NAME_LABEL)
@@ -125,13 +134,15 @@ class DockerCollector:
                 "read_ops": read_ops, "write_ops": write_ops,
             }
 
+            resolved_node_name = pod_to_node.get(pod_uid) or node_name
+
             db.add(DockerMetric(
                 pod_uid=pod_uid,
                 pod_name=pod_name,
                 namespace=namespace,
                 container_name=container_name,
                 container_id=container.id[:12],
-                node_name=node_name,
+                node_name=resolved_node_name,
                 net_rx_bytes=net_rx,
                 net_tx_bytes=net_tx,
                 net_rx_packets=net_rx_pkts,

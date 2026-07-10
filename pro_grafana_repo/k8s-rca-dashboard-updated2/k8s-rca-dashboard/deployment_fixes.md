@@ -14,6 +14,7 @@ This guide documents all the fixes, configurations, and commands executed to res
      * `write_engine` / `SessionLocalWrite`: Used by collectors and the background RCA engine to write to the database (configured with `isolation_level = None` and `@event.listens_for("begin")` emitting `BEGIN IMMEDIATE`).
   2. **Transaction-Level Retries**: Wrapped the RCA engine evaluation cycle in [app/rca/engine.py](file:///c:/rishabh/my_project/project15l/devops/pro_grafana_repo/k8s-rca-dashboard-updated2/k8s-rca-dashboard/app/rca/engine.py) in a transaction retry loop that rolls back, releases the session, and sleeps before retrying when a lock is encountered.
   3. **Isolation of Network Calls from Transactions**: Refactored [app/collectors/k8s_collector.py](file:///c:/rishabh/my_project/project15l/devops/pro_grafana_repo/k8s-rca-dashboard-updated2/k8s-rca-dashboard/app/collectors/k8s_collector.py) to execute all blocking Kubernetes API network calls (listing nodes, pods, events, and all ReplicaSets to map ownership cache) *outside* the database transaction, opening and committing the database session only at the very end for quick writes. This ensures database transactions are held open for milliseconds instead of seconds, completely avoiding locks during network latency.
+  4. **Separation of Lookup Queries from Write Sessions**: Refactored `prometheus_collector.py`, `docker_collector.py`, and `longhorn_collector.py` to run all read-only lookup queries (such as querying the `Pod` list to resolve namespaces, names, and UIDs) inside a read-only `SessionLocal` connection pool instead of using the write session. Write sessions are now only used for quick mutation inserts/flushes, which releases SQLite locks instantly.
 
 ### B. SQLite `.one_or_none()` Multiple Results Found Crash
 * **Problem**: In `k8s_collector.py`, querying pods mapping to events raised a `MultipleResultsFound` exception when multiple pod rows existed with the same name.
@@ -124,3 +125,93 @@ By default, the exporters are bundled with `kube-rbac-proxy` sidecars that restr
      ```bash
      kubectl delete pod -n monitoring -l app=simple-prometheus
      ```
+
+
+
+# K3s Pod Failure & RCA Dashboard - Deployment Fixes & Enhancements
+
+This document details all the changes, fixes, and architectural enhancements implemented in this codebase to resolve silent failures, add missing metrics, improve cluster tree grouping, and handle containerd/Docker configurations.
+
+---
+
+## 1. Backend Changes & Fixes
+
+### A. ReplicaSet Grouping in Cluster Tree
+* **File Modified:** `app/routers/cluster.py`
+* **Fix/Feature:** Updated the cluster tree logic to group pods under their parent `Deployment`, `StatefulSet`, `DaemonSet`, or `ReplicaSet` if those properties are populated by the Kubernetes collector. This prevents replicas from being scattered or grouped under individual replica set hashes (e.g. `ReplicaSet: my-app-79cb8b9c44`), resulting in a cleaner and more aggregated tree layout.
+
+### B. Prometheus Node IP-to-Name Resolution
+* **Files Modified:** `app/core/config.py`, `app/collectors/k8s_collector.py`, `app/collectors/prometheus_collector.py`
+* **Fix/Feature:** 
+  - Defined a global thread-safe dict `NODE_IP_TO_NAME` inside configuration models.
+  - The Kubernetes collector scans K8s node internal/external IP addresses and keeps `NODE_IP_TO_NAME` populated.
+  - The Prometheus collector uses this dictionary to resolve target instances listed as raw IPs (like `192.168.42.213:9100`) back to actual K8s hostname node names (like `server-2`). This resolves missing CPU/Memory rankings and node comparison stats.
+  - Resolved a silent `NameError` by importing the `Node` model inside `prometheus_collector.py`.
+
+### C. cAdvisor Pod Network & Disk Throughput Scraper
+* **File Modified:** `app/collectors/prometheus_collector.py`
+* **Fix/Feature:** 
+  - Added new PromQL queries executing a `5m` rate calculation for pod network RX/TX bytes and block IO device read/write throughput:
+    - `sum by (namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m]))`
+    - `sum by (namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m]))`
+    - `sum by (namespace, pod) (rate(container_blkio_device_usage_total{operation="Read", pod!=""}[5m]))`
+    - `sum by (namespace, pod) (rate(container_blkio_device_usage_total{operation="Write", pod!=""}[5m]))`
+  - Injected retrieved throughput figures into the `DockerMetric` DB table. This allows the dashboard to show network/disk IO metrics for pods without requiring a running Docker collector daemon (highly relevant for containerd-based systems like K3s/k3d).
+
+### D. Auto-Detection of Local Docker Socket & Node Mapping
+* **Files Modified:** `app/background.py`, `app/collectors/docker_collector.py`
+* **Fix/Feature:**
+  - If `DOCKER_HOSTS` configuration is empty, `background.py` attempts to connect to the local Docker socket (`unix://var/run/docker.sock`). If available, it automatically configures `DOCKER_HOSTS = {"localhost": "unix://var/run/docker.sock"}`.
+  - In `docker_collector.py`, when collecting from a local docker socket, the node name would be written as `"localhost"`. To prevent node mismatch in DB joins, we pre-query the `Pod` table inside `_collect_node` and resolve the actual K8s node hostname (e.g. `server-2`) corresponding to the pod's UID before saving to database metrics.
+
+### E. Robust Fallbacks for Longhorn Storage Collector
+* **File Modified:** `app/collectors/longhorn_collector.py`
+* **Fix/Feature:**
+  - In many setups, standalone `/v1/replicas` or `/v1/engines` endpoints return empty arrays or fail. However, the volume object in `/v1/volumes` contains nested `"replicas"` and `"controllers"` (engines) arrays.
+  - Updated `_merge` to use these nested objects as fallbacks.
+  - In cases where the nested replica payload does not include a `currentState` label, the system deduces it from `"running": true/false` flag mapping to `"running"` / `"stopped"`.
+
+---
+
+## 2. Frontend Enhancements
+
+### A. Responsive Time Window Selector
+* **Files Modified:** `app/templates/index.html`, `app/static/css/dashboard.css`, `app/static/js/dashboard.js`
+* **Fix/Feature:**
+  - Added a **Time Window** selector dropdown to filter elements (options range from **Last 8m** to **Last 24h**).
+  - Modified the filter layout CSS from a fixed 5-column grid to a responsive `repeat(auto-fit, minmax(150px, 1fr))` layout to accommodate the additional selector beautifully.
+  - Attached events in `dashboard.js` to trigger a details redraw and timeline/refresh update using the selected time window.
+
+### B. Pod Details Metrics Trend Line Chart
+* **File Modified:** `app/static/js/dashboard.js`
+* **Fix/Feature:**
+  - Configured `loadPodDetails` to request metrics history and docker statistics history in parallel from the backend, constrained by the selected Time Window.
+  - Initialized a dual-axis ECharts line chart inside the **Pod Details** section showing historical usage:
+    - **Left Axis**: Network RX/TX, Disk Read/Write rates in MB/s.
+    - **Right Axis**: CPU & Memory usage percentage.
+  - Instantly disposes and redraws when selecting a new pod or altering the time filter.
+
+### C. Persistent Toast Notifications
+* **File Modified:** `app/static/js/dashboard.js`
+* **Fix/Feature:** Increased the toast duration parameter inside `showToast()` to **30 seconds** (previously 12s) to prevent warning details from disappearing before they can be read.
+
+---
+
+## 3. Platform Compatibility (Windows/WSL2)
+
+### A. Windows Named Pipes for Docker API
+* **Problem**: Running `main.py` on a Windows host caused the auto-detect logic to fail with `AttributeError: module 'socket' has no attribute 'AF_UNIX'` when trying to open `unix://var/run/docker.sock`.
+* **Fix**: Updated `background.py` to inspect `os.name`. If Windows (`nt`), it checks the local named pipe `npipe:////./pipe/docker_engine` instead. On Unix/Linux, it continues using the standard socket (`unix://var/run/docker.sock`), allowing seamless container metrics fetching regardless of the host OS.
+
+---
+
+## 4. Kubernetes Diagnostics & Volume Tests
+
+### A. Longhorn Single-Node Setup Configuration
+* **File Created:** `longhorn-sc.yaml`
+* **Action:** Deployed a custom StorageClass named `longhorn-single` setting `numberOfReplicas: "1"`. This allows Longhorn volumes to schedule successfully on single-node WSL2/kind development environments (default SC requires 3 replicas on 3 separate nodes).
+
+### B. iSCSI kernel module limitations in WSL2
+* **Diagnosed issue:** WSL2 runs on a stripped-down kernel compilation that lacks iSCSI target/initiator support. The Longhorn engine failed to mount the volume, throwing iscsiadm errors (`can not connect to iSCSI daemon (111)`).
+* **Fix/Recommendation:** Using Rancher **Local Path Provisioner** (`standard` / `hostpath`) for local WSL2 volume testing (which verified correctly and preserves logs on pod restarts) while leaving Longhorn ready to mount on staging/production environments that run full Linux kernels with `iscsi_tcp` loaded.
+

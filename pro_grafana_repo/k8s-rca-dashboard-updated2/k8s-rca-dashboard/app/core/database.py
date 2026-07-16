@@ -30,7 +30,6 @@ engine = create_engine(
 write_engine = create_engine(
     f"sqlite:///{settings.DB_PATH}",
     connect_args={"check_same_thread": False, "timeout": 30},
-    execution_options={"isolation_level": "IMMEDIATE"},
     pool_pre_ping=True,
 )
 
@@ -48,13 +47,32 @@ def _set_sqlite_pragmas(dbapi_conn, _):
 
 @event.listens_for(write_engine, "connect")
 def _set_write_sqlite_pragmas(dbapi_conn, _):
-    """Enable WAL mode for write connections."""
+    """Enable WAL mode + disable default transaction handling for BEGIN IMMEDIATE."""
+    dbapi_conn.isolation_level = None
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
     cursor.execute("PRAGMA synchronous=NORMAL;")
     cursor.execute("PRAGMA foreign_keys=ON;")
     cursor.execute("PRAGMA busy_timeout=30000;")
     cursor.close()
+
+@event.listens_for(write_engine, "begin")
+def _set_sqlite_begin_immediate(conn):
+    """Use BEGIN IMMEDIATE for write transactions to avoid locked DB conflicts."""
+    conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+@event.listens_for(write_engine, "commit")
+def _set_sqlite_commit(conn):
+    """Manually commit since isolation_level=None disables the python sqlite3 driver's commit method."""
+    conn.exec_driver_sql("COMMIT")
+
+@event.listens_for(write_engine, "rollback")
+def _set_sqlite_rollback(conn):
+    """Manually rollback since isolation_level=None disables the python sqlite3 driver's rollback method."""
+    try:
+        conn.exec_driver_sql("ROLLBACK")
+    except Exception:
+        pass
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

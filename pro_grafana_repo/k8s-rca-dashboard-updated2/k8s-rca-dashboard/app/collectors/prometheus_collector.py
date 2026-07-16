@@ -61,8 +61,8 @@ Q_POD_DISK_WRITE_RATE = 'sum by (container_label_io_kubernetes_pod_namespace, co
 Q_NODE_CPU_IDLE_RATIO = 'avg by ({label}) (rate(node_cpu_seconds_total{{mode="idle"}}[2m]))'
 Q_NODE_MEM_TOTAL = 'node_memory_MemTotal_bytes'
 Q_NODE_MEM_AVAILABLE = 'node_memory_MemAvailable_bytes'
-Q_NODE_DISK_SIZE = 'node_filesystem_size_bytes{mountpoint="/"}'
-Q_NODE_DISK_AVAIL = 'node_filesystem_avail_bytes{mountpoint="/"}'
+Q_NODE_DISK_SIZE = 'max by ({label}) (node_filesystem_size_bytes{{fstype=~"ext4|xfs|btrfs"}})'
+Q_NODE_DISK_AVAIL = 'max by ({label}) (node_filesystem_avail_bytes{{fstype=~"ext4|xfs|btrfs"}})'
 Q_NODE_LOAD1 = 'node_load1'
 Q_NODE_LOAD5 = 'node_load5'
 Q_NODE_LOAD15 = 'node_load15'
@@ -172,7 +172,15 @@ class PrometheusCollector:
         # Test query to check if the configured label returns metrics.
         # Fall back to "instance" if "node" returns empty or fails.
         cpu_idle = await instant_query(session, Q_NODE_CPU_IDLE_RATIO.format(label=label))
-        if not cpu_idle and label == "node":
+        
+        missing_label = False
+        if label == "node":
+            if not cpu_idle:
+                missing_label = True
+            elif cpu_idle and label not in cpu_idle[0].get("metric", {}):
+                missing_label = True
+                
+        if missing_label:
             logger.info("No node metrics found with label 'node'. Trying fallback label 'instance'...")
             label = "instance"
             cpu_idle = await instant_query(session, Q_NODE_CPU_IDLE_RATIO.format(label=label))
@@ -181,8 +189,8 @@ class PrometheusCollector:
             mem_pressure, disk_pressure, pid_pressure = await asyncio.gather(
                 instant_query(session, Q_NODE_MEM_TOTAL),
                 instant_query(session, Q_NODE_MEM_AVAILABLE),
-                instant_query(session, Q_NODE_DISK_SIZE),
-                instant_query(session, Q_NODE_DISK_AVAIL),
+                instant_query(session, Q_NODE_DISK_SIZE.format(label=label)),
+                instant_query(session, Q_NODE_DISK_AVAIL.format(label=label)),
                 instant_query(session, Q_NODE_LOAD1),
                 instant_query(session, Q_NODE_LOAD5),
                 instant_query(session, Q_NODE_LOAD15),

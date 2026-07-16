@@ -215,3 +215,52 @@ This document details all the changes, fixes, and architectural enhancements imp
 * **Diagnosed issue:** WSL2 runs on a stripped-down kernel compilation that lacks iSCSI target/initiator support. The Longhorn engine failed to mount the volume, throwing iscsiadm errors (`can not connect to iSCSI daemon (111)`).
 * **Fix/Recommendation:** Using Rancher **Local Path Provisioner** (`standard` / `hostpath`) for local WSL2 volume testing (which verified correctly and preserves logs on pod restarts) while leaving Longhorn ready to mount on staging/production environments that run full Linux kernels with `iscsi_tcp` loaded.
 
+# Kubernetes RCA Dashboard: Deployment & Bug Fixes
+
+This document serves as a comprehensive log of all the bugs fixed and features added to the K8s RCA Dashboard system.
+
+## 1. Backend Fixes
+
+### 1.1 Pod Count Inflation (Stale Pods)
+- **File**: `app/collectors/k8s_collector.py`
+- **Issue**: The `_collect_pods()` function was adding new pods to the SQLite database but never deleting them when they were removed from Kubernetes. This caused the UI to report a highly inflated "total pods" count (e.g., 5000+ pods) and cluttered the cluster tree with dead ReplicaSets and old pods.
+- **Fix**: Added a cleanup mechanism that tracks all active Kubernetes `uid`s during a collection cycle and safely deletes any pods from the local database that are no longer present in the cluster.
+
+### 1.2 Longhorn "Not Found" Error Log Spam
+- **File**: `app/collectors/longhorn_client.py`
+- **Issue**: For certain Longhorn configurations (e.g., single-replica setups), endpoints like `/v1/replicas` and `/v1/engines` return a `404 Not Found`. This was causing the collector to constantly spam the terminal/logs with warning messages every 10 seconds.
+- **Fix**: Added explicit logic to catch `404` status codes and downgrade them to debug logs, returning an empty list instead of generating a warning. This prevents log spam for unsupported Longhorn API versions.
+
+## 2. Frontend (UI) Fixes
+
+### 2.1 Pod Rankings Limitation
+- **File**: `app/static/js/dashboard.js` (`renderRankings`)
+- **Issue**: The UI was hardcoded to only show the "Top 10" pods in the CPU, Memory, Network, and Disk rankings panels using an array `.slice(0, 10)` method.
+- **Fix**: Removed the slice limit. The UI now displays *all* active pods in descending order.
+
+### 2.2 Alert Messages Disappearing Too Quickly
+- **File**: `app/static/js/dashboard.js` (`showToast`)
+- **Issue**: Alert popups (toasts) containing critical RCA root-cause messages were disappearing after only 30 seconds, not leaving the user enough time to read them.
+- **Fix**: Increased the `setTimeout` duration from 30 seconds to **2 minutes (120,000 ms)**.
+
+### 2.3 Broken Timestamps ("Invalid Date")
+- **File**: `app/static/js/dashboard.js`
+- **Issue**: The timeline and alerts list were attempting to parse timestamps using `new Date(item.timestamp).toLocaleString()`, which failed on certain browser/backend time formats, resulting in "Invalid Date" text.
+- **Fix**: Created a robust `formatDate(ts)` parser that handles empty timestamps and fallback string parsing safely.
+
+### 2.4 Showing Exact Workload/IO on Crash
+- **File**: `app/static/js/dashboard.js` (`renderPodDetails`)
+- **Issue**: The user wanted to know exactly what the Network I/O, Disk Read/Write, CPU, and Memory usage was at the exact moment a pod crashed. The backend RCA engine was already capturing this `evidence`, but the UI wasn't displaying it.
+- **Fix**: Added an "evidence block" inside the pod failure details UI. Now, clicking on a failing pod displays a table showing the exact CPU, Mem, Net I/O, and Disk I/O metrics recorded at the second of the crash.
+
+## 3. New Tools & Deployment Options
+
+### 3.1 Live Realtime Pod Workload Script
+- **File**: `realtime_pod_workload.sh`
+- **Requirement**: The user needed a "proper Linux command" script that could be run directly on the nodes (e.g., `server-2`, `etcd-a1`) to see real-time container workloads mapped to Kubernetes pods.
+- **Solution**: Developed a Bash script that utilizes `docker stats --no-stream` and `docker inspect`. It extracts the `io.kubernetes.pod.namespace` and `io.kubernetes.pod.name` labels to map docker containers back to their respective Kubernetes Pods. When run with `--loop`, it uses `watch` to display live metrics (CPU, Mem, Net I/O, Block I/O) directly on the node's terminal.
+
+### 3.2 In-Cluster Kubernetes Deployment
+- **File**: `deploy.yaml`
+- **Requirement**: Because the Python backend uses the Docker SDK to fetch Network and Disk I/O, running it locally on a developer laptop prevents it from reaching the Docker sockets on the remote cluster nodes.
+- **Solution**: Generated a complete Kubernetes Deployment, ServiceAccount, ClusterRole, and Service. Deploying the dashboard natively in the cluster allows the python collectors to communicate with the internal Longhorn API, Prometheus, and local Docker endpoints seamlessly.

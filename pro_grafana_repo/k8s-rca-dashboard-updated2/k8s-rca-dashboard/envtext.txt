@@ -24,3 +24,14 @@ DOCKER_HOSTS="npipe:////./pipe/docker_engine"
 
 PROMETHEUS_URL=http://127.0.0.1:9090
 RCA_PROM_INSTANCE_TO_NODE='{"node-exporter.monitoring.svc.cluster.local:9100": "desktop-control-plane"}'
+
+
+
+kubectl apply -f .
+pp> sh deploy.sh
+sh : The term 'sh' is not recognized as the name of a cmdlet, 
+function, script file, or operable program. Check the spelling of the 
+name, or if a path was included, verify that the path is correct and 
+try again.
+At line:1 char:1
++ sh deploy.sh

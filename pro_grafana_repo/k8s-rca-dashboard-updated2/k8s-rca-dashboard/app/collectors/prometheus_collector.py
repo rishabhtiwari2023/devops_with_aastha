@@ -39,23 +39,23 @@ logger = logging.getLogger("rca.prometheus_collector")
 # PromQL queries
 # ----------------------------------------------------------------------
 Q_POD_CPU_USAGE_MILLICORES = (
-    'sum by (namespace, pod) '
-    '(rate(container_cpu_usage_seconds_total{container!="", container!="POD"}[2m])) * 1000'
+    'sum by (container_label_io_kubernetes_pod_namespace, container_label_io_kubernetes_pod_name) '
+    '(rate(container_cpu_usage_seconds_total{container_label_io_kubernetes_pod_name!=""}[2m])) * 1000'
 )
 Q_POD_CPU_LIMIT_CORES = 'kube_pod_container_resource_limits{resource="cpu"}'
 Q_POD_CPU_REQUEST_CORES = 'kube_pod_container_resource_requests{resource="cpu"}'
 Q_POD_MEM_USAGE_BYTES = (
-    'sum by (namespace, pod) '
-    '(container_memory_working_set_bytes{container!="", container!="POD"})'
+    'sum by (container_label_io_kubernetes_pod_namespace, container_label_io_kubernetes_pod_name) '
+    '(container_memory_working_set_bytes{container_label_io_kubernetes_pod_name!=""})'
 )
 Q_POD_MEM_LIMIT_BYTES = 'kube_pod_container_resource_limits{resource="memory"}'
 Q_POD_MEM_REQUEST_BYTES = 'kube_pod_container_resource_requests{resource="memory"}'
 
 # Pod Network & Disk queries (derived from cAdvisor/Prometheus)
-Q_POD_NET_RX_RATE = 'sum by (namespace, pod) (rate(container_network_receive_bytes_total{pod!=""}[5m]))'
-Q_POD_NET_TX_RATE = 'sum by (namespace, pod) (rate(container_network_transmit_bytes_total{pod!=""}[5m]))'
-Q_POD_DISK_READ_RATE = 'sum by (namespace, pod) (rate(container_blkio_device_usage_total{operation="Read", pod!=""}[5m]))'
-Q_POD_DISK_WRITE_RATE = 'sum by (namespace, pod) (rate(container_blkio_device_usage_total{operation="Write", pod!=""}[5m]))'
+Q_POD_NET_RX_RATE = 'sum by (container_label_io_kubernetes_pod_namespace, container_label_io_kubernetes_pod_name) (rate(container_network_receive_bytes_total{container_label_io_kubernetes_pod_name!=""}[5m]))'
+Q_POD_NET_TX_RATE = 'sum by (container_label_io_kubernetes_pod_namespace, container_label_io_kubernetes_pod_name) (rate(container_network_transmit_bytes_total{container_label_io_kubernetes_pod_name!=""}[5m]))'
+Q_POD_DISK_READ_RATE = 'sum by (container_label_io_kubernetes_pod_namespace, container_label_io_kubernetes_pod_name) (rate(container_fs_reads_bytes_total{container_label_io_kubernetes_pod_name!=""}[5m]))'
+Q_POD_DISK_WRITE_RATE = 'sum by (container_label_io_kubernetes_pod_namespace, container_label_io_kubernetes_pod_name) (rate(container_fs_writes_bytes_total{container_label_io_kubernetes_pod_name!=""}[5m]))'
 
 
 Q_NODE_CPU_IDLE_RATIO = 'avg by ({label}) (rate(node_cpu_seconds_total{{mode="idle"}}[2m]))'
@@ -351,7 +351,17 @@ def _vector_to_dict(vector: list[dict], label_keys: tuple, sum_duplicates: bool 
             if key is None:
                 continue
         else:
-            key = tuple(metric.get(k, "") for k in label_keys)
+            key_parts = []
+            for k in label_keys:
+                val = metric.get(k)
+                if not val:
+                    # Fallback for raw cAdvisor labels
+                    if k == "pod":
+                        val = metric.get("container_label_io_kubernetes_pod_name")
+                    elif k == "namespace":
+                        val = metric.get("container_label_io_kubernetes_pod_namespace")
+                key_parts.append(val or "")
+            key = tuple(key_parts)
             if any(part == "" for part in key):
                 continue
 

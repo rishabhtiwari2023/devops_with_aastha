@@ -35,6 +35,9 @@ async def _get_collection(session: aiohttp.ClientSession, path: str) -> list[dic
     url = f"{settings.LONGHORN_API_URL.rstrip('/')}/{path.lstrip('/')}"
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 404:
+                logger.debug("Longhorn API GET %s returned 404 (likely unsupported in this version)", path)
+                return []
             if resp.status != 200:
                 logger.warning("Longhorn API GET %s failed (%s)", path, resp.status)
                 return []

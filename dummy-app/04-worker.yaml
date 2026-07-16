@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dummy-worker
+  namespace: dummy-app
+  labels:
+    app: dummy-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: dummy-worker
+  template:
+    metadata:
+      labels:
+        app: dummy-worker
+    spec:
+      containers:
+      - name: worker
+        image: alpine:latest
+        command: ["/bin/sh", "-c", "while true; do sleep 3600; done"]
+        resources:
+          limits:
+            cpu: "5m"
+            memory: "10Mi"
+          requests:
+            cpu: "1m"
+            memory: "5Mi"

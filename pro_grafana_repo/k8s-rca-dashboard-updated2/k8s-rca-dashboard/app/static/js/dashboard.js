@@ -38,6 +38,13 @@ function setText(id, text) {
     if (el) el.textContent = text;
 }
 
+function formatDate(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return String(ts);
+    return d.toLocaleString();
+}
+
 function buildSummaryCard(title, value, subtitle, badge) {
     return `
         <div class="summary-card">
@@ -321,7 +328,7 @@ function renderAlerts() {
         <details class="alert-row">
             <summary class="alert-summary-header">
                 <strong>${alert.title || alert.reason || alert.short_reason}</strong>
-                <span>${alert.namespace} · ${alert.node_name} · ${new Date(alert.timestamp).toLocaleString()}</span>
+                <span>${alert.namespace} · ${alert.node_name} · ${formatDate(alert.timestamp)}</span>
             </summary>
             <div class="alert-details-content">
                 <p>${alert.message || alert.explanation || "No details available."}</p>
@@ -343,7 +350,7 @@ function renderTimeline() {
         <details class="timeline-item">
             <summary class="timeline-summary-header">
                 <strong>[${item.kind}] ${item.title}</strong>
-                <span>${item.namespace || item.node_name || ""} · ${new Date(item.timestamp).toLocaleString()}</span>
+                <span>${item.namespace || item.node_name || ""} · ${formatDate(item.timestamp)}</span>
             </summary>
             <div class="timeline-details-content">
                 <p>${item.detail || item.message || "No details available."}</p>
@@ -365,7 +372,7 @@ function renderRankings() {
             el.innerHTML = "<li>No data yet</li>";
             return;
         }
-        el.innerHTML = rows.slice(0, 10).map(row => `<li class="ranking-item">${formatter(row)}</li>`).join("");
+        el.innerHTML = rows.map(row => `<li class="ranking-item">${formatter(row)}</li>`).join("");
     });
 }
 
@@ -531,6 +538,19 @@ function renderPodDetails() {
                 <div class="root-cause-card severity-${rootCause.severity}">
                     <h4><span class="severity-pill ${rootCause.severity}">${rootCause.severity}</span>${rootCause.short_reason}</h4>
                     <p>${rootCause.explanation}</p>
+                    ${rootCause.evidence ? `
+                        <div class="evidence-block" style="margin-top: 15px; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+                            <h5 style="margin-bottom: 8px; color: var(--text);">Workload/IO at exact time of crash:</h5>
+                            <ul style="list-style: none; padding-left: 0; font-size: 0.9em; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                <li><strong>CPU:</strong> ${rootCause.evidence.cpu_pct_of_limit ? rootCause.evidence.cpu_pct_of_limit.toFixed(2) : 0}% of limit</li>
+                                <li><strong>Memory:</strong> ${rootCause.evidence.mem_pct_of_limit ? rootCause.evidence.mem_pct_of_limit.toFixed(2) : 0}% of limit</li>
+                                <li><strong>Net RX:</strong> ${rootCause.evidence.net_rx_bytes_per_sec ? (rootCause.evidence.net_rx_bytes_per_sec / 1048576).toFixed(2) : 0} MB/s</li>
+                                <li><strong>Net TX:</strong> ${rootCause.evidence.net_tx_bytes_per_sec ? (rootCause.evidence.net_tx_bytes_per_sec / 1048576).toFixed(2) : 0} MB/s</li>
+                                <li><strong>Disk Read:</strong> ${rootCause.evidence.blk_read_bytes_per_sec ? (rootCause.evidence.blk_read_bytes_per_sec / 1048576).toFixed(2) : 0} MB/s</li>
+                                <li><strong>Disk Write:</strong> ${rootCause.evidence.blk_write_bytes_per_sec ? (rootCause.evidence.blk_write_bytes_per_sec / 1048576).toFixed(2) : 0} MB/s</li>
+                            </ul>
+                        </div>
+                    ` : ''}
                 </div>
             ` : `
                 <div class="root-cause-card">
@@ -994,7 +1014,8 @@ function showToast({ title, message, severity = "critical" }) {
     toast.querySelector(".toast-close").addEventListener("click", () => toast.remove());
     container.appendChild(toast);
 
-    setTimeout(() => toast.remove(), 30000);
+    // Keep alert on screen for 2 minutes to allow user to read it
+    setTimeout(() => toast.remove(), 120000);
 }
 
 function setWsStatus(connected) {

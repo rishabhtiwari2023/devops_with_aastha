@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dummy-frontend
+  namespace: dummy-app
+  labels:
+    app: dummy-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dummy-frontend
+  template:
+    metadata:
+      labels:
+        app: dummy-frontend
+    spec:
+      containers:
+      - name: web
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: "20m"
+            memory: "30Mi"
+          requests:
+            cpu: "5m"
+            memory: "15Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dummy-frontend-svc
+  namespace: dummy-app
+spec:
+  type: NodePort
+  selector:
+    app: dummy-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30090

@@ -181,9 +181,11 @@ class KubernetesCollector:
         if pod_list is None:
             pod_list = self.core.list_pod_for_all_namespaces(watch=False)
         node_pod_counts: dict[str, int] = {}
+        seen_uids = set()
 
         for p in pod_list.items:
             uid = p.metadata.uid
+            seen_uids.add(uid)
             name = p.metadata.name
             namespace = p.metadata.namespace
             node_name = p.spec.node_name or ""
@@ -253,6 +255,14 @@ class KubernetesCollector:
             if not is_new and total_restarts > previous_total_restarts:
                 self._record_restart(db, row, container_statuses,
                                       previous_total_restarts, total_restarts)
+
+        # Remove deleted pods from the database
+        all_db_uids = [p[0] for p in db.query(Pod.uid).all()]
+        for db_uid in all_db_uids:
+            if db_uid not in seen_uids:
+                stale_pod = db.get(Pod, db_uid)
+                if stale_pod:
+                    db.delete(stale_pod)
 
         # Second pass: update node pod_count now that we've listed pods
         for node_name, count in node_pod_counts.items():
